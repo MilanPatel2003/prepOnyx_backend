@@ -11,7 +11,6 @@ if (!admin.apps.length) {
   });
 }
 const db = admin.firestore();
-
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 module.exports = async (req, res) => {
@@ -45,18 +44,137 @@ module.exports = async (req, res) => {
   }
 
   // Handle event types as needed
-  if (event.type === 'checkout.session.completed') {
-    const session = event.data.object;
-    // Example: Save session info to Firestore
-    await db.collection('stripeSessions').doc(session.id).set(session);
+  // Centralized plan and mapping logic
+  const plans = [
+    {
+      id: 'free',
+      name: 'Free',
+      features: [
+        { feature: 'mockInterview', limit: 2 },
+        { feature: 'pdfAnalyze', limit: 5 },
+        { feature: 'skribbleAI', limit: 'unlimited' }
+      ]
+    },
+    {
+      id: 'premium',
+      name: 'Premium',
+      features: [
+        { feature: 'mockInterview', limit: 10 },
+        { feature: 'pdfAnalyze', limit: 25 },
+        { feature: 'skribbleAI', limit: 'unlimited' }
+      ]
+    },
+    {
+      id: 'pro',
+      name: 'Pro',
+      features: [
+        { feature: 'mockInterview', limit: 'unlimited' },
+        { feature: 'pdfAnalyze', limit: 'unlimited' },
+        { feature: 'skribbleAI', limit: 'unlimited' }
+      ]
+    }
+  ];
+  const priceIdToPlanId = {
+    'price_1REom3SDRUk0pjjIaFkMgS5A': 'premium',
+    'price_1REonDSDRUk0pjjI1KtZrCJO': 'premium',
+    'price_1REop5SDRUk0pjjIHIrb7U5e': 'pro',
+    'price_1REoodSDRUk0pjjIIFNczrWQ': 'pro',
+  };
+  function getPlanById(planId) {
+    return plans.find(plan => plan.id === planId) || plans[0];
+  }
+  function getFeatureLimits(plan) {
+    const limits = {};
+    plan.features.forEach(f => { limits[f.feature] = f.limit; });
+    return limits;
   }
 
-  // Respond to Stripe
-  res.json({ received: true });
+  // Handle checkout.session.completed
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    const { userId } = session.metadata || {};
+    const subscriptionId = session.subscription;
+    // Try to get priceId from session
+    const priceId = session?.metadata?.priceId || session?.display_items?.[0]?.price?.id || session?.items?.[0]?.price?.id || session?.subscription?.items?.data?.[0]?.price?.id;
+    const mappedPlanId = priceIdToPlanId[priceId] || session.metadata?.planId || 'free';
+    const plan = getPlanById(mappedPlanId);
+    const featureLimits = getFeatureLimits(plan);
+    if (userId) {
+      await db.collection('users').doc(userId).set(
+        {
+          plan: plan.id,
+          planName: plan.name,
+          subscriptionId,
+          subscriptionStatus: 'active',
+          updatedAt: new Date(),
+          featureLimits,
+          usageHistory: [],
+        },
+        { merge: true }
+      );
+      console.log(`[WEBHOOK] User ${userId} upgraded to plan ${plan.id}`);
+    } else {
+      console.warn('[WEBHOOK] No userId in session.metadata');
+    }
+  }
+
+  // Handle subscription updates (renewal, status changes)
+  if (event.type === 'customer.subscription.updated') {
+    const subscription = event.data.object;
+    const userId = subscription.metadata?.userId;
+    // Get priceId from subscription
+    const priceId = subscription.items?.data?.[0]?.price?.id;
+    const mappedPlanId = priceIdToPlanId[priceId] || 'free';
+    const plan = getPlanById(mappedPlanId);
+    const featureLimits = getFeatureLimits(plan);
+    const subscriptionStatus = subscription.status;
+    if (userId) {
+      let updates = {
+        subscriptionStatus,
+        updatedAt: new Date(),
+      };
+      if (subscriptionStatus === 'active') {
+        updates.plan = plan.id;
+        updates.planName = plan.name;
+        updates.featureLimits = featureLimits;
+      }
+      if (subscriptionStatus === 'canceled' || subscriptionStatus === 'unpaid' || subscriptionStatus === 'incomplete_expired') {
+        updates.plan = 'free';
+        updates.planName = 'Free';
+        updates.featureLimits = getFeatureLimits(getPlanById('free'));
+      }
+      await db.collection('users').doc(userId).set(updates, { merge: true });
+      console.log(`[WEBHOOK] User ${userId} subscription updated: ${subscriptionStatus}`);
+    } else {
+      console.warn('[WEBHOOK] No userId in subscription.metadata');
+    }
+  }
+
+  // Handle subscription deleted (canceled)
+  if (event.type === 'customer.subscription.deleted') {
+    const subscription = event.data.object;
+    const userId = subscription.metadata?.userId;
+    if (userId) {
+      await db.collection('users').doc(userId).set(
+        {
+          plan: 'free',
+          planName: 'Free',
+          subscriptionStatus: 'canceled',
+          featureLimits: getFeatureLimits(getPlanById('free')),
+          updatedAt: new Date(),
+        },
+        { merge: true }
+      );
+      console.log(`[WEBHOOK] User ${userId} subscription canceled.`);
+    } else {
+      console.warn('[WEBHOOK] No userId in subscription.metadata');
+    }
+  }
+
+  res.status(200).send('Received');
 };
 
 
-module.exports = async (req, res) => {
   // Stripe requires the raw body for webhook signature verification
   if (req.method !== 'POST') {
     return res.status(405).send('Method Not Allowed');
@@ -93,16 +211,61 @@ module.exports = async (req, res) => {
     const subscriptionId = session.subscription;
 
     // Update Firestore user document with perks and usage tracking
-    if (userId && planId) {
+    // Plan mapping and feature limits
+    const plans = [
+      {
+        id: 'free',
+        name: 'Free',
+        features: [
+          { feature: 'mockInterview', limit: 2 },
+          { feature: 'pdfAnalyze', limit: 5 },
+          { feature: 'skribbleAI', limit: 'unlimited' }
+        ]
+      },
+      {
+        id: 'premium',
+        name: 'Premium',
+        features: [
+          { feature: 'mockInterview', limit: 10 },
+          { feature: 'pdfAnalyze', limit: 25 },
+          { feature: 'skribbleAI', limit: 'unlimited' }
+        ]
+      },
+      {
+        id: 'pro',
+        name: 'Pro',
+        features: [
+          { feature: 'mockInterview', limit: 'unlimited' },
+          { feature: 'pdfAnalyze', limit: 'unlimited' },
+          { feature: 'skribbleAI', limit: 'unlimited' }
+        ]
+      }
+    ];
+    const priceIdToPlanId = {
+      'price_1REom3SDRUk0pjjIaFkMgS5A': 'premium',
+      'price_1REonDSDRUk0pjjI1KtZrCJO': 'premium',
+      'price_1REop5SDRUk0pjjIHIrb7U5e': 'pro',
+      'price_1REoodSDRUk0pjjIIFNczrWQ': 'pro',
+    };
+    // Try to get priceId from session
+    const priceId = session?.metadata?.priceId || session?.display_items?.[0]?.price?.id || session?.items?.[0]?.price?.id || session?.subscription?.items?.data?.[0]?.price?.id;
+    const mappedPlanId = priceIdToPlanId[priceId] || planId || 'free';
+    const plan = plans.find(p => p.id === mappedPlanId) || plans[0];
+    // Build feature limits
+    const featureLimits = {};
+    plan.features.forEach(f => {
+      featureLimits[f.feature] = f.limit;
+    });
+    if (userId) {
       await db.collection('users').doc(userId).set(
         {
-          plan: planId,
-          planName,
+          plan: plan.id,
+          planName: plan.name,
           subscriptionId,
           subscriptionStatus: 'active',
           updatedAt: new Date(),
-          interviewsLeft: planId === 'premium' ? 5 : 0, // Set default interviews for premium
-          usageHistory: [], // Initialize usage history
+          featureLimits,
+          usageHistory: [],
         },
         { merge: true }
       );
@@ -155,7 +318,7 @@ module.exports = async (req, res) => {
   }
 
   res.status(200).send('Received');
-};
+
 
 // Vercel config: disable default body parsing for raw body support
 export const config = {
