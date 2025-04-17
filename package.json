@@ -4,6 +4,7 @@
   "main": "index.js",
   "license": "MIT",
   "dependencies": {
+    "firebase-admin": "^11.10.1",
     "raw-body": "^3.0.0",
     "stripe": "^12.0.0"
   }
