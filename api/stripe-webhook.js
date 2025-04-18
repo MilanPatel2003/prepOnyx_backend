@@ -89,10 +89,17 @@ module.exports = async (req, res) => {
     const mappedPlanId = priceIdToPlanId[priceId] || session.metadata?.planId || 'free';
     const plan = getPlanById(mappedPlanId);
     const featureLimits = getFeatureLimits(plan);
-    // Try to get subscription period end if available
+    // Fetch subscription from Stripe to get current_period_end
     let subscriptionEndDate = null;
-    if (session.subscription && session.subscription.current_period_end) {
-      subscriptionEndDate = new Date(session.subscription.current_period_end * 1000);
+    if (subscriptionId) {
+      try {
+        const stripeSubscription = await stripe.subscriptions.retrieve(subscriptionId);
+        if (stripeSubscription && stripeSubscription.current_period_end) {
+          subscriptionEndDate = new Date(stripeSubscription.current_period_end * 1000);
+        }
+      } catch (err) {
+        console.error('Failed to fetch subscription from Stripe:', err);
+      }
     }
     if (userId) {
       await db.collection('users').doc(userId).set(
