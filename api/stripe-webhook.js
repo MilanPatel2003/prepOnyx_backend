@@ -89,6 +89,11 @@ module.exports = async (req, res) => {
     const mappedPlanId = priceIdToPlanId[priceId] || session.metadata?.planId || 'free';
     const plan = getPlanById(mappedPlanId);
     const featureLimits = getFeatureLimits(plan);
+    // Try to get subscription period end if available
+    let subscriptionEndDate = null;
+    if (session.subscription && session.subscription.current_period_end) {
+      subscriptionEndDate = new Date(session.subscription.current_period_end * 1000);
+    }
     if (userId) {
       await db.collection('users').doc(userId).set(
         {
@@ -99,6 +104,7 @@ module.exports = async (req, res) => {
           updatedAt: new Date(),
           featureLimits,
           usageHistory: [],
+          ...(subscriptionEndDate ? { subscriptionEndDate } : {}),
         },
         { merge: true }
       );
@@ -116,10 +122,16 @@ module.exports = async (req, res) => {
     const plan = getPlanById(mappedPlanId);
     const featureLimits = getFeatureLimits(plan);
     const subscriptionStatus = subscription.status;
+    // Get period end from Stripe (UNIX timestamp in seconds)
+    let subscriptionEndDate = null;
+    if (subscription.current_period_end) {
+      subscriptionEndDate = new Date(subscription.current_period_end * 1000);
+    }
     if (userId) {
       let updates = {
         subscriptionStatus,
         updatedAt: new Date(),
+        ...(subscriptionEndDate ? { subscriptionEndDate } : {}),
       };
       if (subscriptionStatus === 'active') {
         updates.plan = plan.id;
@@ -141,6 +153,10 @@ module.exports = async (req, res) => {
   if (event.type === 'customer.subscription.deleted') {
     const subscription = event.data.object;
     const userId = subscription.metadata?.userId;
+    let subscriptionEndDate = null;
+    if (subscription.current_period_end) {
+      subscriptionEndDate = new Date(subscription.current_period_end * 1000);
+    }
     if (userId) {
       await db.collection('users').doc(userId).set(
         {
@@ -149,6 +165,7 @@ module.exports = async (req, res) => {
           subscriptionStatus: 'canceled',
           featureLimits: getFeatureLimits(getPlanById('free')),
           updatedAt: new Date(),
+          ...(subscriptionEndDate ? { subscriptionEndDate } : {}),
         },
         { merge: true }
       );
