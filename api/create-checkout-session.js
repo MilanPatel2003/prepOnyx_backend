@@ -2,7 +2,12 @@ const Stripe = require('stripe');
 
 module.exports = async (req, res) => {
   // CORS headers for all responses
-  res.setHeader('Access-Control-Allow-Origin', 'http://localhost:5173');
+  // Dynamically allow localhost and production frontend for CORS
+  const allowedOrigins = ['http://localhost:5173', 'https://preponyx.web.app'];
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
@@ -40,8 +45,8 @@ module.exports = async (req, res) => {
           quantity: 1,
         },
       ],
-      success_url: `${frontendUrl}/pricing/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${frontendUrl}/pricing/cancel`,
+      success_url: `https://preponyx.web.app/dashboard?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `https://preponyx.web.app/pricing`, // Redirect to pricing if payment is cancelled
       metadata: {
         planId,
         planName,
