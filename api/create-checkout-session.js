@@ -48,7 +48,9 @@ module.exports = async (req, res) => {
         userId,
       },
       billing_address_collection: 'required',
-      ...(userEmail && { customer_email: userEmail }), // Add customer email if provided
+      locale: 'auto', // Automatically localizes the Checkout page to the user's browser language
+      ...(userEmail && { customer_email: userEmail }), // Pre-fill customer email if provided
+      // Note: For best branding, update logo, color, and business info in Stripe Dashboard > Settings > Branding
     }); // <-- If you deploy backend, update frontendUrl and ensure env vars are set accordingly
     return res.status(200).json({ url: session.url });
   } catch (err) {
